@@ -1,0 +1,25 @@
+# config.yaml
+server:
+  port: 8080
+  name: "rag-gateway"
+
+llm:
+  provider: "deepseek" # openai / deepseek
+  api_key: "your-api-key"
+  model: "deepseek-chat"
+  base_url: "https://api.deepseek.com" # 如果是 OpenAI 则留空或写 https://api.openai.com/v1
+
+embedding:
+  api_key: "your-api-key"
+  base_url: "https://api.openai.com/v1"
+
+vector_db:
+  host: "localhost"
+  port: 19530
+
+redis:
+  addr: "localhost:6379"
+  password: "mypassword"
+
+trace:
+  endpoint: "localhost:4318"  # OTLP HTTP 端点 (不需要 http:// 前缀)
