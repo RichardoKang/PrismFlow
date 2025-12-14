@@ -23,19 +23,19 @@ PrismFlow 是一个高性能、可观测的 **RAG（检索增强生成）网关*
 graph TD
     Client[客户端/Web UI] -->|HTTP POST /v1/chat| Gateway[PrismFlow Gateway]
     
-    subgraph "PrismFlow Internal"
-        Gateway -->|1. Check| Cache[Semantic Cache (Redis)]
+    subgraph Internal["PrismFlow Internal"]
+        Gateway -->|1. Check| Cache[Semantic Cache Redis]
         Gateway -->|2. Embed| Embedder[Embedding Provider]
-        Gateway -->|3. Search| VectorDB[Vector Store (Milvus)]
+        Gateway -->|3. Search| VectorDB[Vector Store Milvus]
         Gateway -->|4. Generate| LLM[LLM Provider]
     end
     
     Cache -.->|Hit| Client
     LLM -->|Stream| Client
     
-    subgraph "Observability"
+    subgraph Observability
         Gateway -.->|Trace Data| OTel[OpenTelemetry Collector]
-        OTel --> Jaeger
+        OTel --> Jaeger[Jaeger UI]
     end
 ```
 
