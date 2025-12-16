@@ -236,6 +236,7 @@ func streamCachedResponse(c *gin.Context, text string) {
 		chunk := string(runes[i:end])
 		data, _ := json.Marshal(SSEMessage{Content: chunk})
 		_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		// Flush 确保数据立即发送到客户端
 		c.Writer.Flush()
 
 		time.Sleep(10 * time.Millisecond)

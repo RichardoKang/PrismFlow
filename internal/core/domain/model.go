@@ -11,5 +11,5 @@ type SearchResult struct {
 	ID      string
 	Content string
 	Score   float32
-	Meta    map[string]interface{} // 灵活存放元数据，如 source_url, timestamp
+	Meta    map[string]interface{}
 }

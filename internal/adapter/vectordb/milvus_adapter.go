@@ -46,6 +46,7 @@ func NewsMilvusAdapter(cfg MilvusConfig) (*MilvusAdapter, error) {
 	return adapter, nil
 }
 
+// ensureCollection 确保 collection 存在，如果不存在则创建
 func (m *MilvusAdapter) ensureCollection(ctx context.Context) error {
 	exists, err := m.client.HasCollection(ctx, m.collectionName)
 	if err != nil {
@@ -67,7 +68,7 @@ func (m *MilvusAdapter) ensureCollection(ctx context.Context) error {
 			return fmt.Errorf("failed to create collection: %w", err)
 		}
 
-		// 创建向量索引
+		// 创建向量索引，nlist_size 可以根据数据量调整，代表聚类中心数量
 		idx, _ := entity.NewIndexIvfFlat(entity.COSINE, 128)
 		if err := m.client.CreateIndex(ctx, m.collectionName, "embedding", idx, false); err != nil {
 			return fmt.Errorf("failed to create index: %w", err)
@@ -82,19 +83,21 @@ func (m *MilvusAdapter) ensureCollection(ctx context.Context) error {
 
 // Search 向量检索
 func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) ([]SearchResult, error) {
+	// 设置搜索参数，nprobes 代表搜索时扫描的簇数量，值越大精度越高但速度越慢
 	sp, _ := entity.NewIndexIvfFlatSearchParam(16)
 
+	// 执行搜索，返回 content 和 metadata 字段
 	results, err := m.client.Search(
 		ctx,
 		m.collectionName,
 		nil,
 		"",
 		[]string{"content", "metadata"},
-		[]entity.Vector{entity.FloatVector(vector)},
+		[]entity.Vector{entity.FloatVector(vector)}, // 查询向量，注意包装成 entity.Vector 切片
 		"embedding",
 		entity.COSINE,
-		topK,
-		sp,
+		topK, // topK，返回最相似的 K 个结果
+		sp,   // 搜索参数
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
@@ -103,6 +106,7 @@ func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) 
 	var searchResults []SearchResult
 	for _, result := range results {
 		for i := 0; i < result.ResultCount; i++ {
+			// 提取 content 和 metadata 字段
 			content, _ := result.Fields.GetColumn("content").GetAsString(i)
 			metadata, _ := result.Fields.GetColumn("metadata").GetAsString(i)
 
@@ -113,7 +117,7 @@ func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) 
 			})
 		}
 	}
-
+	// 返回搜索结果
 	return searchResults, nil
 }
 

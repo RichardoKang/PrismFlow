@@ -1,4 +1,4 @@
-package llm
+package embed
 
 import (
 	"context"
@@ -37,6 +37,6 @@ func (a *EmbeddingAdapter) Embed(ctx context.Context, text string) ([]float32, e
 	if len(resp.Data) == 0 {
 		return nil, fmt.Errorf("no embedding data returned")
 	}
-
+	// 返回第一个输入的向量
 	return resp.Data[0].Embedding, nil
 }

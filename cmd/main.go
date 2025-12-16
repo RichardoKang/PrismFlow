@@ -1,6 +1,8 @@
 package main
 
 import (
+	"PrismFlow/internal/adapter/embed"
+	middleware2 "PrismFlow/internal/middleware"
 	"log"
 	"net/http"
 	"time"
@@ -10,7 +12,6 @@ import (
 
 	"PrismFlow/internal/adapter/llm"
 	"PrismFlow/internal/adapter/vectordb"
-	"PrismFlow/internal/api/middleware"
 	v1 "PrismFlow/internal/api/v1"
 	"PrismFlow/internal/config"
 	"PrismFlow/internal/core/services"
@@ -49,7 +50,7 @@ func main() {
 	milvusAdapter := vectordb.NewMilvusAdapter(cfg.VectorDBAddr())
 
 	// 使用Mock的 Embedding Adapter
-	embedAdapter := llm.NewMockEmbeddingAdapter()
+	embedAdapter := embed.NewMockEmbeddingAdapter()
 
 	// 5. 初始化 Caching
 	redisCache := cache.NewRedisSemanticCache(cfg.Redis.Addr, cfg.Redis.Password)
@@ -68,7 +69,7 @@ func main() {
 	r.Use(corsMiddleware())
 
 	// 植入中间件
-	r.Use(middleware.TracingMiddleware(cfg.Server.Name))
+	r.Use(middleware2.TracingMiddleware(cfg.Server.Name))
 
 	// 静态文件服务 - 提供 Web UI
 	r.StaticFile("/", "./web/index.html")
@@ -77,7 +78,7 @@ func main() {
 
 	// API 路由 (语义缓存只对 chat 接口生效)
 	chatGroup := r.Group("/v1")
-	chatGroup.Use(middleware.SemanticCacheMiddleware(embedAdapter, redisCache, logger))
+	chatGroup.Use(middleware2.SemanticCacheMiddleware(embedAdapter, redisCache, logger))
 	chatGroup.POST("/chat", chatHandler.HandleChat)
 
 	// 健康检查接口

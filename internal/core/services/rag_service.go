@@ -282,7 +282,7 @@ func (s *RAGService) StreamChat(ctx context.Context, userQuery string) (<-chan s
 // buildPrompt 构建提示词模板
 func (s *RAGService) buildPrompt(_ string, docs []domain.SearchResult) string {
 	var sb strings.Builder
-	sb.WriteString("你是一个智能助手。请基于以下提供的上下文回答用户的问题。如果上下文没有相关信息，请诚实回答不知道。\n\n")
+	sb.WriteString("你是一个智能助手。请基于以下提供的上下文回答用户的问题。如果上下文没有相关信息，请诚实回答不知道后再给出你所认为的答案。\n\n")
 	sb.WriteString("=== 上下文开始 ===\n")
 
 	for i, doc := range docs {

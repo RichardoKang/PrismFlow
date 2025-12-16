@@ -19,7 +19,3 @@ services:
     environment:
       - COLLECTOR_OTLP_ENABLED=true
 
-
-  # 注意：为了演示方便，这里省略了庞大的 Milvus 集群配置
-  # 实际开发初期，建议先用 Mock 或者简单的向量库（如 Qdrant 单机版）替代
-  # 或者直接使用上面 Redis Stack 充当简易向量库
