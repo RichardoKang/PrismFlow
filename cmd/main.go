@@ -1,7 +1,8 @@
 package main
 
 import (
-	"PrismFlow/internal/adapter/embed"
+	"PrismFlow/internal/adapter/embedding"
+	"PrismFlow/internal/core/ports"
 	middleware2 "PrismFlow/internal/middleware"
 	"log"
 	"net/http"
@@ -46,14 +47,40 @@ func main() {
 		llmAdapter = llm.NewOpenAIAdapter(cfg.LLM.APIKey, cfg.LLM.Model)
 	}
 
-	// 使用 Mock 的 VectorDB
-	milvusAdapter := vectordb.NewMilvusAdapter(cfg.VectorDBAddr())
+	// 使用真正的 Milvus 向量数据库
+	milvusCfg := vectordb.MilvusConfig{
+		Address:        cfg.VectorDBAddr(),
+		CollectionName: cfg.VectorDB.CollectionName,
+		Dimension:      cfg.VectorDB.Dimension,
+	}
+	milvusAdapter, err := vectordb.NewMilvusAdapter(milvusCfg)
+	if err != nil {
+		log.Fatalf("Failed to connect to Milvus: %v", err)
+	}
+	defer milvusAdapter.Close()
 
-	// 使用Mock的 Embedding Adapter
-	embedAdapter := embed.NewMockEmbeddingAdapter()
+	// 根据配置选择 Embedding Adapter
+	var embedAdapter ports.EmbeddingProvider
+	if cfg.Embedding.Provider == "ollama" {
+		embedAdapter = embedding.NewOllamaEmbeddingAdapter(embedding.OllamaConfig{
+			BaseURL: cfg.Embedding.BaseURL,
+			Model:   cfg.Embedding.Model,
+		})
+		logger.Info("Using Ollama embedding adapter",
+			zap.String("base_url", cfg.Embedding.BaseURL),
+			zap.String("model", cfg.Embedding.Model),
+		)
+	} else {
+		embedAdapter = embedding.NewMockEmbeddingAdapter()
+		logger.Info("Using Mock embedding adapter")
+	}
 
 	// 5. 初始化 Caching
-	redisCache := cache.NewRedisSemanticCache(cfg.Redis.Addr, cfg.Redis.Password)
+	redisCache, err := cache.NewRedisSemanticCache(cfg.Redis.Addr, cfg.Redis.Password, cfg.VectorDB.Dimension)
+	if err != nil {
+		logger.Warn("Failed to initialize Redis cache, semantic cache disabled", zap.Error(err))
+		redisCache = nil
+	}
 
 	// 6. 初始化 Service
 	ragService := services.NewRAGService(llmAdapter, milvusAdapter, embedAdapter, logger)

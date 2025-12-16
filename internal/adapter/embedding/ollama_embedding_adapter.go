@@ -1,4 +1,4 @@
-package embed
+package embedding
 
 import (
 	"bytes"
@@ -8,10 +8,14 @@ import (
 	"net/http"
 	"time"
 
+	"PrismFlow/internal/core/ports"
 	"PrismFlow/internal/infra/observability"
 
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// 确保实现了接口
+var _ ports.EmbeddingProvider = (*OllamaEmbeddingAdapter)(nil)
 
 type OllamaEmbeddingAdapter struct {
 	baseURL    string
@@ -59,10 +63,13 @@ type ollamaResponse struct {
 func (a *OllamaEmbeddingAdapter) Embed(ctx context.Context, text string) ([]float32, error) {
 	vectors, err := a.EmbedBatch(ctx, []string{text})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("embedding failed for text (len=%d): %w", len(text), err)
 	}
 	if len(vectors) == 0 {
-		return nil, fmt.Errorf("no embedding returned")
+		return nil, fmt.Errorf("no embedding returned for text (len=%d)", len(text))
+	}
+	if len(vectors[0]) == 0 {
+		return nil, fmt.Errorf("empty vector returned for text (len=%d)", len(text))
 	}
 	return vectors[0], nil
 }
@@ -115,6 +122,13 @@ func (a *OllamaEmbeddingAdapter) EmbedBatch(ctx context.Context, texts []string)
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
+	// 检查返回的 embeddings 是否为空
+	if len(ollamaResp.Embeddings) == 0 {
+		err := fmt.Errorf("ollama returned empty embeddings for %d input(s)", len(texts))
+		observability.SetSpanError(span, err)
+		return nil, err
+	}
+
 	duration := time.Since(start)
 	observability.AddSpanAttributes(span,
 		attribute.Int64("embedding.duration_ms", duration.Milliseconds()),
@@ -127,13 +141,13 @@ func (a *OllamaEmbeddingAdapter) EmbedBatch(ctx context.Context, texts []string)
 }
 
 func (a *OllamaEmbeddingAdapter) Dimension() int {
-	// nomic-embed-text 是 768 维
-	// mxbai-embed-large 是 1024 维
+	// nomic-embedding-text 是 768 维
+	// mxbai-embedding-large 是 1024 维
 	// llama2/3 是 4096 维
 	switch a.model {
-	case "nomic-embed-text":
+	case "nomic-embedding-text":
 		return 768
-	case "mxbai-embed-large":
+	case "mxbai-embedding-large":
 		return 1024
 	default:
 		return 768 // 默认假设

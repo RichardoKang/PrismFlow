@@ -29,7 +29,7 @@ Thumbs.db
 
 # Config files (sensitive data)
 configs/config.yaml
-!configs/config.yaml.example
+!configs/config.prod.yaml
 
 # Logs
 *.log

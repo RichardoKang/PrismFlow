@@ -3,12 +3,19 @@ package vectordb
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+
+	"PrismFlow/internal/core/domain"
+	"PrismFlow/internal/core/ports"
 
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
+
+// 确保 MilvusAdapter 实现 ports.VectorStore 接口
+var _ ports.VectorStore = (*MilvusAdapter)(nil)
 
 type MilvusAdapter struct {
 	client         client.Client
@@ -19,10 +26,10 @@ type MilvusAdapter struct {
 type MilvusConfig struct {
 	Address        string // localhost:19530
 	CollectionName string
-	Dimension      int // 1536 for OpenAI ada-002
+	Dimension      int // 1536 for OpenAI ada-002, 768 for nomic-embedding-text
 }
 
-func NewsMilvusAdapter(cfg MilvusConfig) (*MilvusAdapter, error) {
+func NewMilvusAdapter(cfg MilvusConfig) (*MilvusAdapter, error) {
 	ctx := context.Background()
 
 	c, err := client.NewClient(ctx, client.Config{
@@ -81,8 +88,8 @@ func (m *MilvusAdapter) ensureCollection(ctx context.Context) error {
 	return m.client.LoadCollection(ctx, m.collectionName, false)
 }
 
-// Search 向量检索
-func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) ([]SearchResult, error) {
+// Search 向量检索，实现 ports.VectorStore 接口
+func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) ([]domain.SearchResult, error) {
 	// 设置搜索参数，nprobes 代表搜索时扫描的簇数量，值越大精度越高但速度越慢
 	sp, _ := entity.NewIndexIvfFlatSearchParam(16)
 
@@ -103,17 +110,24 @@ func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) 
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
 
-	var searchResults []SearchResult
+	var searchResults []domain.SearchResult
 	for _, result := range results {
 		for i := 0; i < result.ResultCount; i++ {
 			// 提取 content 和 metadata 字段
 			content, _ := result.Fields.GetColumn("content").GetAsString(i)
-			metadata, _ := result.Fields.GetColumn("metadata").GetAsString(i)
+			metadataStr, _ := result.Fields.GetColumn("metadata").GetAsString(i)
 
-			searchResults = append(searchResults, SearchResult{
-				Content:  content,
-				Metadata: metadata,
-				Score:    result.Scores[i],
+			// 解析 metadata JSON
+			var meta map[string]interface{}
+			if metadataStr != "" {
+				_ = json.Unmarshal([]byte(metadataStr), &meta)
+			}
+
+			searchResults = append(searchResults, domain.SearchResult{
+				ID:      fmt.Sprintf("%d", i),
+				Content: content,
+				Score:   result.Scores[i],
+				Meta:    meta,
 			})
 		}
 	}
@@ -121,13 +135,20 @@ func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) 
 	return searchResults, nil
 }
 
-// Insert 插入文档
-func (m *MilvusAdapter) Insert(ctx context.Context, contents []string, embeddings [][]float32, metadata []string) error {
-	contentCol := entity.NewColumnVarChar("content", contents)
-	metadataCol := entity.NewColumnVarChar("metadata", metadata)
-	embeddingCol := entity.NewColumnFloatVector("embedding", m.dimension, embeddings)
+// Store 存储向量，实现 ports.VectorStore 接口
+func (m *MilvusAdapter) Store(ctx context.Context, id string, vector []float32, content string, meta map[string]interface{}) error {
+	// 将 meta 转换为 JSON 字符串
+	metadataBytes, err := json.Marshal(meta)
+	if err != nil {
+		metadataBytes = []byte("{}")
+	}
+	metadataStr := string(metadataBytes)
 
-	_, err := m.client.Insert(ctx, m.collectionName, "", contentCol, metadataCol, embeddingCol)
+	contentCol := entity.NewColumnVarChar("content", []string{content})
+	metadataCol := entity.NewColumnVarChar("metadata", []string{metadataStr})
+	embeddingCol := entity.NewColumnFloatVector("embedding", m.dimension, [][]float32{vector})
+
+	_, err = m.client.Insert(ctx, m.collectionName, "", contentCol, metadataCol, embeddingCol)
 	if err != nil {
 		return fmt.Errorf("insert failed: %w", err)
 	}
@@ -137,10 +158,4 @@ func (m *MilvusAdapter) Insert(ctx context.Context, contents []string, embedding
 
 func (m *MilvusAdapter) Close() error {
 	return m.client.Close()
-}
-
-type SearchResult struct {
-	Content  string
-	Metadata string
-	Score    float32
 }

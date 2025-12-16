@@ -29,6 +29,12 @@ func SemanticCacheMiddleware(
 	logger *zap.Logger,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 如果缓存未初始化，直接跳过缓存逻辑
+		if cache == nil {
+			c.Next()
+			return
+		}
+
 		// 创建缓存检查的 Span
 		ctx, cacheSpan := observability.StartSpan(c.Request.Context(), "SemanticCache.Check")
 		c.Request = c.Request.WithContext(ctx)
@@ -63,11 +69,11 @@ func SemanticCacheMiddleware(
 
 		// 3. 计算向量（用于缓存查找）
 		_, embedSpan := observability.StartSpan(ctx, "SemanticCache.Embedding")
-		embCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		embCtx, embedCancel := context.WithTimeout(ctx, 10*time.Second) // 本地 Ollama 推理可能较慢
 
 		embedStart := time.Now()
 		vector, err := embedder.Embed(embCtx, userQuery)
-		cancel()
+		embedCancel()
 		embedDuration := time.Since(embedStart)
 
 		embedSpan.SetAttributes(
@@ -79,7 +85,18 @@ func SemanticCacheMiddleware(
 			embedSpan.End()
 			cacheSpan.SetAttributes(attribute.String("cache.skip_reason", "embedding_error"))
 			cacheSpan.End()
-			logger.Warn("Cache embedding failed", zap.Error(err))
+			logger.Warn("Cache embedding failed", zap.Error(err), zap.String("query", userQuery))
+			c.Next()
+			return
+		}
+
+		// 检查返回的向量是否为空
+		if len(vector) == 0 {
+			embedSpan.SetAttributes(attribute.String("embedding.error", "empty_vector"))
+			embedSpan.End()
+			cacheSpan.SetAttributes(attribute.String("cache.skip_reason", "empty_vector"))
+			cacheSpan.End()
+			logger.Warn("Embedding returned empty vector", zap.String("query", userQuery))
 			c.Next()
 			return
 		}
@@ -87,10 +104,12 @@ func SemanticCacheMiddleware(
 		observability.SetSpanSuccess(embedSpan)
 		embedSpan.End()
 
-		// 4. 查缓存
+		// 4. 查缓存（使用独立的超时 context）
 		_, lookupSpan := observability.StartSpan(ctx, "SemanticCache.Lookup")
+		lookupCtx, lookupCancel := context.WithTimeout(ctx, 5*time.Second) // 增加超时时间
 		lookupStart := time.Now()
-		cachedAnswer, hit, err := cache.Get(embCtx, vector, 0.95)
+		cachedAnswer, hit, err := cache.Get(lookupCtx, vector, 0.95)
+		lookupCancel()
 		lookupDuration := time.Since(lookupStart)
 
 		lookupSpan.SetAttributes(

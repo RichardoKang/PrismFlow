@@ -12,9 +12,7 @@ type MockVectorAdapter struct{}
 
 var _ ports.VectorStore = (*MockVectorAdapter)(nil)
 
-func NewMilvusAdapter(addr string) *MockVectorAdapter {
-	// 这里虽然叫 NewMilvusAdapter 是为了兼容 main.go 的调用
-	// 实际上返回的是 Mock 实现
+func NewMockVectorAdapter() *MockVectorAdapter {
 	return &MockVectorAdapter{}
 }
 

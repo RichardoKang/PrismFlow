@@ -30,13 +30,17 @@ type LLMConfig struct {
 }
 
 type EmbeddingConfig struct {
-	APIKey  string `yaml:"api_key"`
-	BaseURL string `yaml:"base_url"`
+	Provider string `yaml:"provider"` // ollama / openai
+	APIKey   string `yaml:"api_key"`
+	BaseURL  string `yaml:"base_url"`
+	Model    string `yaml:"model"`
 }
 
 type VectorDBConfig struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Host           string `yaml:"host"`
+	Port           int    `yaml:"port"`
+	CollectionName string `yaml:"collection_name"`
+	Dimension      int    `yaml:"dimension"`
 }
 
 type RedisConfig struct {

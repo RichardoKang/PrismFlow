@@ -60,7 +60,7 @@ docker-compose up -d
 复制配置文件并根据需要修改：
 
 ```bash
-cp configs/config.yaml configs/config.yaml.example
+cp configs/config.yaml configs/config.prod.yaml
 # 编辑 configs/config.yaml 设置你的 API Key
 ```
 

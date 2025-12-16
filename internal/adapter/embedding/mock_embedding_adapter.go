@@ -1,4 +1,4 @@
-package embed
+package embedding
 
 import (
 	"context"

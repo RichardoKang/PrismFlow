@@ -10,12 +10,16 @@ llm:
   base_url: "https://api.deepseek.com" # 如果是 OpenAI 则留空或写 https://api.openai.com/v1
 
 embedding:
-  api_key: "your-api-key"
-  base_url: "https://api.openai.com/v1"
+  provider: "ollama"  # ollama / openai
+  base_url: "http://localhost:11434"
+  model: "nomic-embed-text"
+  api_key: ""  # ollama 不需要 api_key，openai 需要填写
 
 vector_db:
   host: "localhost"
   port: 19530
+  collection_name: "rag_documents"
+  dimension: 768  # nomic-embed-text 使用 768 维度, OpenAI ada-002 使用 1536
 
 redis:
   addr: "localhost:6379"
