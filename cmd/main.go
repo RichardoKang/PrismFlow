@@ -2,8 +2,10 @@ package main
 
 import (
 	"PrismFlow/internal/adapter/embedding"
+	"PrismFlow/internal/adapter/reranker"
+	"PrismFlow/internal/adapter/retriever"
 	"PrismFlow/internal/core/ports"
-	middleware2 "PrismFlow/internal/middleware"
+	"PrismFlow/internal/middleware"
 	"log"
 	"net/http"
 	"time"
@@ -40,7 +42,7 @@ func main() {
 	}()
 
 	// 4. 初始化 Adapters
-	var llmAdapter *llm.OpenAIAdapter
+	var llmAdapter ports.LLMProvider
 	if cfg.LLM.Provider == "deepseek" {
 		llmAdapter = llm.NewDeepSeekAdapter(cfg.LLM.APIKey, cfg.LLM.Model)
 	} else {
@@ -61,7 +63,8 @@ func main() {
 
 	// 根据配置选择 Embedding Adapter
 	var embedAdapter ports.EmbeddingProvider
-	if cfg.Embedding.Provider == "ollama" {
+	switch cfg.Embedding.Provider {
+	case "ollama":
 		embedAdapter = embedding.NewOllamaEmbeddingAdapter(embedding.OllamaConfig{
 			BaseURL: cfg.Embedding.BaseURL,
 			Model:   cfg.Embedding.Model,
@@ -70,7 +73,12 @@ func main() {
 			zap.String("base_url", cfg.Embedding.BaseURL),
 			zap.String("model", cfg.Embedding.Model),
 		)
-	} else {
+	case "llamacpp":
+		embedAdapter = embedding.NewLlamaCppEmbeddingAdapter(cfg.Embedding.BaseURL)
+		logger.Info("Using llama.cpp embedding adapter",
+			zap.String("base_url", cfg.Embedding.BaseURL),
+		)
+	default:
 		embedAdapter = embedding.NewMockEmbeddingAdapter()
 		logger.Info("Using Mock embedding adapter")
 	}
@@ -82,13 +90,46 @@ func main() {
 		redisCache = nil
 	}
 
-	// 6. 初始化 Service
-	ragService := services.NewRAGService(llmAdapter, milvusAdapter, embedAdapter, logger)
+	// 6. 初始化 Reranker
+	var rerankerAdapter ports.RerankerProvider
+	if cfg.Reranker.Provider == "bge" {
+		rerankerAdapter = reranker.NewBGEReranker(reranker.BGEConfig{
+			BaseURL: cfg.Reranker.BaseURL,
+			Model:   cfg.Reranker.Model,
+		}, logger)
+		logger.Info("Using BGE reranker",
+			zap.String("base_url", cfg.Reranker.BaseURL),
+			zap.String("model", cfg.Reranker.Model),
+		)
+	} else {
+		rerankerAdapter = reranker.NewMockReranker()
+		logger.Info("Using Mock reranker")
+	}
 
-	// 7. 初始化 Handler
+	// 7. 初始化 Hybrid Retriever（BM25 + Vector，使用 Redis Stack 做全文检索）
+	var hybridRetriever ports.HybridRetriever
+	if redisCache != nil {
+		redisBM25, bm25Err := vectordb.NewRedisBM25Store(redisCache.Client())
+		if bm25Err != nil {
+			logger.Warn("Failed to initialize BM25 store, hybrid search disabled", zap.Error(bm25Err))
+			hybridRetriever = retriever.NewHybridRetriever(milvusAdapter, nil, logger)
+		} else {
+			hybridRetriever = retriever.NewHybridRetriever(milvusAdapter, redisBM25, logger)
+			logger.Info("Hybrid search enabled (Vector + BM25)")
+		}
+	} else {
+		hybridRetriever = retriever.NewHybridRetriever(milvusAdapter, nil, logger)
+		logger.Info("Hybrid search disabled (no Redis), using vector-only retrieval")
+	}
+
+	// 8. 初始化 Service
+	ragService := services.NewRAGService(llmAdapter, milvusAdapter, embedAdapter, rerankerAdapter, hybridRetriever, logger, cfg.RAG.ScoreThreshold, cfg.RAG.TopK, cfg.Reranker.TopN)
+
+	// 9. 初始化 Handler
 	chatHandler := v1.NewChatHandler(ragService, logger)
+	ingestHandler := v1.NewIngestHandler(embedAdapter, milvusAdapter, logger)
 
-	// 8. 启动 HTTP Server
+	// 10. 启动 HTTP Server
 	r := gin.New()
 	r.Use(gin.Recovery())
 
@@ -96,7 +137,7 @@ func main() {
 	r.Use(corsMiddleware())
 
 	// 植入中间件
-	r.Use(middleware2.TracingMiddleware(cfg.Server.Name))
+	r.Use(middleware.TracingMiddleware(cfg.Server.Name))
 
 	// 静态文件服务 - 提供 Web UI
 	r.StaticFile("/", "./web/index.html")
@@ -105,8 +146,11 @@ func main() {
 
 	// API 路由 (语义缓存只对 chat 接口生效)
 	chatGroup := r.Group("/v1")
-	chatGroup.Use(middleware2.SemanticCacheMiddleware(embedAdapter, redisCache, logger))
+	chatGroup.Use(middleware.SemanticCacheMiddleware(embedAdapter, redisCache, logger, cfg.RAG.CacheThreshold))
 	chatGroup.POST("/chat", chatHandler.HandleChat)
+
+	// Ingest API（无需语义缓存）
+	r.POST("/v1/ingest", ingestHandler.HandleIngest)
 
 	// 健康检查接口
 	r.GET("/health", func(c *gin.Context) {

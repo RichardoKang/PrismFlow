@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PrismFlow RAG Gateway - 对话测试</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -11,31 +12,52 @@
             box-sizing: border-box;
         }
 
+        :root {
+            --primary: #0ea5e9;
+            --primary-dark: #0284c7;
+            --primary-light: #38bdf8;
+            --bg-start: #0f172a;
+            --bg-end: #1e293b;
+            --surface: #1e293b;
+            --surface-hover: #334155;
+            --border: #334155;
+            --text: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --user-msg-bg: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+            --assistant-msg-bg: #334155;
+            --success: #22c55e;
+            --error: #ef4444;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, var(--bg-start) 0%, var(--bg-end) 100%);
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
             padding: 20px;
+            color: var(--text);
         }
 
         .container {
             width: 100%;
             max-width: 900px;
-            background: #ffffff;
+            background: var(--surface);
             border-radius: 20px;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
             overflow: hidden;
             display: flex;
             flex-direction: column;
             height: 90vh;
             max-height: 800px;
+            border: 1px solid var(--border);
         }
 
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
             color: white;
             padding: 20px 30px;
             display: flex;
@@ -49,11 +71,18 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            color: var(--text);
         }
 
         .header h1::before {
-            content: "🔮";
-            font-size: 1.8rem;
+            content: "";
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .status {
@@ -61,21 +90,22 @@
             align-items: center;
             gap: 8px;
             font-size: 0.85rem;
-            background: rgba(255,255,255,0.2);
+            background: var(--surface-hover);
             padding: 6px 12px;
             border-radius: 20px;
+            border: 1px solid var(--border);
         }
 
         .status-dot {
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #4ade80;
+            background: var(--success);
             animation: pulse 2s infinite;
         }
 
         .status-dot.offline {
-            background: #f87171;
+            background: var(--error);
             animation: none;
         }
 
@@ -88,7 +118,7 @@
             flex: 1;
             overflow-y: auto;
             padding: 20px 30px;
-            background: #f8fafc;
+            background: var(--bg-start);
         }
 
         .message {
@@ -119,11 +149,11 @@
         }
 
         .message.user .avatar {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--user-msg-bg);
         }
 
         .message.assistant .avatar {
-            background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
         }
 
         .message-content {
@@ -135,16 +165,16 @@
         }
 
         .message.user .message-content {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--user-msg-bg);
             color: white;
             border-bottom-right-radius: 4px;
         }
 
         .message.assistant .message-content {
-            background: white;
-            color: #334155;
+            background: var(--assistant-msg-bg);
+            color: var(--text);
             border-bottom-left-radius: 4px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid var(--border);
         }
 
         .message.assistant .message-content.streaming {
@@ -154,7 +184,7 @@
         .message.assistant .message-content.streaming::after {
             content: "▋";
             animation: blink 1s infinite;
-            color: #667eea;
+            color: var(--primary);
         }
 
         @keyframes blink {
@@ -163,15 +193,111 @@
         }
 
         .message.error .message-content {
-            background: #fef2f2;
-            color: #dc2626;
-            border: 1px solid #fecaca;
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--error);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        /* Markdown Styles */
+        .message-content h1, .message-content h2, .message-content h3,
+        .message-content h4, .message-content h5, .message-content h6 {
+            margin-top: 1em;
+            margin-bottom: 0.5em;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .message-content h1 { font-size: 1.4em; }
+        .message-content h2 { font-size: 1.2em; }
+        .message-content h3 { font-size: 1.1em; }
+
+        .message-content p {
+            margin-bottom: 0.8em;
+        }
+
+        .message-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .message-content ul, .message-content ol {
+            margin: 0.8em 0;
+            padding-left: 1.5em;
+        }
+
+        .message-content li {
+            margin-bottom: 0.3em;
+        }
+
+        .message-content code {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+            font-size: 0.9em;
+        }
+
+        .message-content pre {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 12px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 0.8em 0;
+        }
+
+        .message-content pre code {
+            background: none;
+            padding: 0;
+            font-size: 0.85em;
+            line-height: 1.5;
+        }
+
+        .message-content blockquote {
+            border-left: 3px solid var(--primary);
+            padding-left: 12px;
+            margin: 0.8em 0;
+            color: var(--text-secondary);
+        }
+
+        .message-content a {
+            color: var(--primary-light);
+            text-decoration: none;
+        }
+
+        .message-content a:hover {
+            text-decoration: underline;
+        }
+
+        .message-content table {
+            border-collapse: collapse;
+            margin: 0.8em 0;
+            width: 100%;
+        }
+
+        .message-content th, .message-content td {
+            border: 1px solid var(--border);
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        .message-content th {
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        .message-content hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 1em 0;
+        }
+
+        .message-content img {
+            max-width: 100%;
+            border-radius: 8px;
         }
 
         .input-container {
             padding: 20px 30px;
-            background: white;
-            border-top: 1px solid #e2e8f0;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
         }
 
         .input-wrapper {
@@ -188,7 +314,7 @@
         textarea {
             width: 100%;
             padding: 14px 18px;
-            border: 2px solid #e2e8f0;
+            border: 2px solid var(--border);
             border-radius: 16px;
             font-size: 1rem;
             font-family: inherit;
@@ -197,16 +323,23 @@
             transition: border-color 0.2s, box-shadow 0.2s;
             min-height: 52px;
             max-height: 150px;
+            background: var(--surface-hover);
+            color: var(--text);
+        }
+
+        textarea::placeholder {
+            color: var(--text-muted);
         }
 
         textarea:focus {
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.2);
         }
 
         textarea:disabled {
-            background: #f1f5f9;
+            background: var(--surface-hover);
             cursor: not-allowed;
+            opacity: 0.6;
         }
 
         .send-btn {
@@ -214,7 +347,7 @@
             height: 52px;
             border: none;
             border-radius: 16px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--user-msg-bg);
             color: white;
             cursor: pointer;
             display: flex;
@@ -225,7 +358,7 @@
 
         .send-btn:hover:not(:disabled) {
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.4);
         }
 
         .send-btn:active:not(:disabled) {
@@ -244,9 +377,10 @@
 
         .metrics {
             padding: 10px 30px;
-            background: #f1f5f9;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
             font-size: 0.8rem;
-            color: #64748b;
+            color: var(--text-secondary);
             display: flex;
             gap: 20px;
             flex-wrap: wrap;
@@ -259,23 +393,23 @@
         }
 
         .metric-label {
-            color: #94a3b8;
+            color: var(--text-muted);
         }
 
         .metric-value {
             font-weight: 600;
-            color: #475569;
+            color: var(--text);
         }
 
         .welcome {
             text-align: center;
             padding: 60px 20px;
-            color: #64748b;
+            color: var(--text-secondary);
         }
 
         .welcome h2 {
             font-size: 1.5rem;
-            color: #334155;
+            color: var(--text);
             margin-bottom: 10px;
         }
 
@@ -292,24 +426,25 @@
 
         .suggestion {
             padding: 10px 16px;
-            background: white;
-            border: 1px solid #e2e8f0;
+            background: var(--surface);
+            border: 1px solid var(--border);
             border-radius: 20px;
             cursor: pointer;
             transition: all 0.2s;
             font-size: 0.9rem;
+            color: var(--text);
         }
 
         .suggestion:hover {
-            border-color: #667eea;
-            background: #f8fafc;
+            border-color: var(--primary);
+            background: var(--surface-hover);
             transform: translateY(-2px);
         }
 
         .clear-btn {
             background: none;
             border: none;
-            color: rgba(255,255,255,0.8);
+            color: var(--text-secondary);
             cursor: pointer;
             font-size: 0.85rem;
             padding: 6px 12px;
@@ -318,7 +453,26 @@
         }
 
         .clear-btn:hover {
-            background: rgba(255,255,255,0.1);
+            background: var(--surface-hover);
+            color: var(--text);
+        }
+
+        /* Scrollbar Styles */
+        .chat-container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .chat-container::-webkit-scrollbar-track {
+            background: var(--bg-start);
+        }
+
+        .chat-container::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        .chat-container::-webkit-scrollbar-thumb:hover {
+            background: var(--surface-hover);
         }
     </style>
 </head>
@@ -434,9 +588,16 @@
             messageDiv.className = `message ${type}`;
 
             const avatar = type === 'user' ? '👤' : '🤖';
+
+            // Render markdown for assistant messages
+            let renderedContent = content;
+            if (type === 'assistant' && content) {
+                renderedContent = marked.parse(content);
+            }
+
             messageDiv.innerHTML = `
                 <div class="avatar">${avatar}</div>
-                <div class="message-content ${isStreaming ? 'streaming' : ''}">${content}</div>
+                <div class="message-content ${isStreaming ? 'streaming' : ''}">${renderedContent}</div>
             `;
 
             chatContainer.appendChild(messageDiv);
@@ -505,15 +666,16 @@
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
-                let buffer = '';
+                let lineBuffer = '';
+                let contentBuffer = '';
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
+                    lineBuffer += decoder.decode(value, { stream: true });
+                    const lines = lineBuffer.split('\n');
+                    lineBuffer = lines.pop() || '';
 
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
@@ -531,7 +693,10 @@
                                         firstTokenTime = Date.now();
                                     }
                                     tokenCount++;
-                                    assistantContent.textContent += data.content;
+                                    contentBuffer += data.content;
+
+                                    // Render markdown for assistant messages
+                                    assistantContent.innerHTML = marked.parse(contentBuffer);
 
                                     // 实时更新指标
                                     if (tokenCount % 5 === 0) {

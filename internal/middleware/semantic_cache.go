@@ -27,6 +27,7 @@ func SemanticCacheMiddleware(
 	embedder ports.EmbeddingProvider,
 	cache ports.SemanticCache,
 	logger *zap.Logger,
+	cacheThreshold float32,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 如果缓存未初始化，直接跳过缓存逻辑
@@ -108,13 +109,13 @@ func SemanticCacheMiddleware(
 		_, lookupSpan := observability.StartSpan(ctx, "SemanticCache.Lookup")
 		lookupCtx, lookupCancel := context.WithTimeout(ctx, 5*time.Second) // 增加超时时间
 		lookupStart := time.Now()
-		cachedAnswer, hit, err := cache.Get(lookupCtx, vector, 0.95)
+		cachedAnswer, hit, err := cache.Get(lookupCtx, vector, cacheThreshold)
 		lookupCancel()
 		lookupDuration := time.Since(lookupStart)
 
 		lookupSpan.SetAttributes(
 			attribute.Float64("lookup.duration_ms", float64(lookupDuration.Milliseconds())),
-			attribute.Float64("lookup.threshold", 0.95),
+			attribute.Float64("lookup.threshold", float64(cacheThreshold)),
 		)
 
 		if err == nil && hit {
@@ -155,6 +156,9 @@ func SemanticCacheMiddleware(
 		)
 		observability.AddSpanEvent(cacheSpan, "cache_miss")
 		cacheSpan.End()
+
+		// 将已计算的向量传递给下游，避免重复计算
+		c.Set("query_vector", vector)
 
 		// === MISS: 准备捕获响应 ===
 		recorder := &streamRecorder{

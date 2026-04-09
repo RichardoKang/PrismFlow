@@ -17,25 +17,35 @@ import (
 
 // RAGService 负责编排整个检索生成流程
 type RAGService struct {
-	llm      ports.LLMProvider
-	vectorDB ports.VectorStore
-	embedder ports.EmbeddingProvider
-	logger   *zap.Logger
+	llm            ports.LLMProvider
+	vectorDB       ports.VectorStore
+	retriever      ports.HybridRetriever // 混合检索器，为 nil 时降级为纯向量检索
+	embedder       ports.EmbeddingProvider
+	reranker       ports.RerankerProvider
+	logger         *zap.Logger
+	scoreThreshold float32
+	topK           int
+	rerankTopN     int
 }
 
 // NewRAGService 构造函数 (依赖注入)
-func NewRAGService(llm ports.LLMProvider, vdb ports.VectorStore, emb ports.EmbeddingProvider, logger *zap.Logger) *RAGService {
+func NewRAGService(llm ports.LLMProvider, vdb ports.VectorStore, emb ports.EmbeddingProvider, reranker ports.RerankerProvider, retriever ports.HybridRetriever, logger *zap.Logger, scoreThreshold float32, topK int, rerankTopN int) *RAGService {
 	return &RAGService{
-		llm:      llm,
-		vectorDB: vdb,
-		embedder: emb,
-		logger:   logger,
+		llm:            llm,
+		vectorDB:       vdb,
+		retriever:      retriever,
+		embedder:       emb,
+		reranker:       reranker,
+		logger:         logger,
+		scoreThreshold: scoreThreshold,
+		topK:           topK,
+		rerankTopN:     rerankTopN,
 	}
 }
 
 // StreamChat 处理用户请求的主入口
-// 返回一个只读 channel 用于流式传输，以及可能发生的错误 channel
-func (s *RAGService) StreamChat(ctx context.Context, userQuery string) (<-chan string, <-chan error) {
+// queryVector 为可选参数，如果缓存中间件已计算则复用，避免双重 embedding
+func (s *RAGService) StreamChat(ctx context.Context, userQuery string, queryVector []float32) (<-chan string, <-chan error) {
 	outChan := make(chan string)
 	errChan := make(chan error, 1)
 
@@ -57,55 +67,72 @@ func (s *RAGService) StreamChat(ctx context.Context, userQuery string) (<-chan s
 
 		s.logger.Info("Starting RAG flow", zap.String("query", userQuery))
 
-		// ========== 2. Embedding 阶段 ==========
-		embedCtx, embedSpan := observability.StartSpan(ctx, "Embedding",
-			trace.WithSpanKind(trace.SpanKindClient),
-		)
-		embedSpan.SetAttributes(
-			attribute.String("embedding.input", userQuery),
-			attribute.String("embedding.provider", "mock"), // 可替换为真实 provider 名称
-		)
+		// ========== 2. Embedding 阶段（复用已有向量或重新计算） ==========
+		if len(queryVector) > 0 {
+			s.logger.Info("Reusing query vector from cache middleware", zap.Int("dim", len(queryVector)))
+			observability.AddSpanEvent(ragSpan, "embedding_reused",
+				attribute.Int("vector_dimensions", len(queryVector)),
+			)
+		} else {
+			embedCtx, embedSpan := observability.StartSpan(ctx, "Embedding",
+				trace.WithSpanKind(trace.SpanKindClient),
+			)
+			embedSpan.SetAttributes(
+				attribute.String("embedding.input", userQuery),
+				attribute.String("embedding.provider", "ollama"),
+			)
 
-		embedStart := time.Now()
-		embedTimeoutCtx, embedCancel := context.WithTimeout(embedCtx, 3*time.Second)
-		queryVector, err := s.embedder.Embed(embedTimeoutCtx, userQuery)
-		embedCancel()
-		embedDuration := time.Since(embedStart)
+			embedStart := time.Now()
+			embedTimeoutCtx, embedCancel := context.WithTimeout(embedCtx, 3*time.Second)
+			var err error
+			queryVector, err = s.embedder.Embed(embedTimeoutCtx, userQuery)
+			embedCancel()
+			embedDuration := time.Since(embedStart)
 
-		embedSpan.SetAttributes(
-			attribute.Float64("embedding.duration_ms", float64(embedDuration.Milliseconds())),
-		)
+			embedSpan.SetAttributes(
+				attribute.Float64("embedding.duration_ms", float64(embedDuration.Milliseconds())),
+			)
 
-		if err != nil {
-			observability.SetSpanError(embedSpan, err)
+			if err != nil {
+				observability.SetSpanError(embedSpan, err)
+				embedSpan.End()
+				s.logger.Error("Embedding failed", zap.Error(err))
+				errChan <- fmt.Errorf("failed to process query embedding: %w", err)
+				return
+			}
+
+			embedSpan.SetAttributes(
+				attribute.Int("embedding.vector_dim", len(queryVector)),
+			)
+			observability.SetSpanSuccess(embedSpan)
+			observability.AddSpanEvent(embedSpan, "embedding_completed",
+				attribute.Int("vector_dimensions", len(queryVector)),
+			)
 			embedSpan.End()
-			s.logger.Error("Embedding failed", zap.Error(err))
-			errChan <- fmt.Errorf("failed to process query embedding: %w", err)
-			return
 		}
 
-		embedSpan.SetAttributes(
-			attribute.Int("embedding.vector_dim", len(queryVector)),
-		)
-		observability.SetSpanSuccess(embedSpan)
-		observability.AddSpanEvent(embedSpan, "embedding_completed",
-			attribute.Int("vector_dimensions", len(queryVector)),
-		)
-		embedSpan.End()
-
-		// ========== 3. Vector Search 阶段 ==========
-		searchCtx, searchSpan := observability.StartSpan(ctx, "VectorSearch",
+		// ========== 3. Retrieval 阶段（Hybrid Search 或纯向量检索） ==========
+		searchCtx, searchSpan := observability.StartSpan(ctx, "Retrieval",
 			trace.WithSpanKind(trace.SpanKindClient),
 		)
-		topK := 5
+		topK := s.topK
 		searchSpan.SetAttributes(
 			attribute.Int("search.top_k", topK),
-			attribute.String("search.provider", "mock_milvus"),
+			attribute.Bool("search.hybrid_enabled", s.retriever != nil),
 		)
 
 		searchStart := time.Now()
 		searchTimeoutCtx, searchCancel := context.WithTimeout(searchCtx, 5*time.Second)
-		searchResults, err := s.vectorDB.Search(searchTimeoutCtx, queryVector, topK)
+
+		var searchResults []domain.SearchResult
+		var searchErr error
+		if s.retriever != nil {
+			searchResults, searchErr = s.retriever.Search(searchTimeoutCtx, userQuery, queryVector, topK)
+			searchSpan.SetAttributes(attribute.String("search.mode", "hybrid"))
+		} else {
+			searchResults, searchErr = s.vectorDB.Search(searchTimeoutCtx, queryVector, topK)
+			searchSpan.SetAttributes(attribute.String("search.mode", "vector_only"))
+		}
 		searchCancel()
 		searchDuration := time.Since(searchStart)
 
@@ -113,25 +140,31 @@ func (s *RAGService) StreamChat(ctx context.Context, userQuery string) (<-chan s
 			attribute.Float64("search.duration_ms", float64(searchDuration.Milliseconds())),
 		)
 
-		if err != nil {
-			observability.SetSpanError(searchSpan, err)
+		if searchErr != nil {
+			observability.SetSpanError(searchSpan, searchErr)
 			searchSpan.End()
-			s.logger.Error("Vector search failed", zap.Error(err))
-			errChan <- fmt.Errorf("knowledge retrieval failed: %w", err)
+			s.logger.Error("Retrieval failed", zap.Error(searchErr))
+			errChan <- fmt.Errorf("knowledge retrieval failed: %w", searchErr)
 			return
 		}
 
 		// 记录搜索结果统计
 		var maxScore, minScore float32 = 0, 1
 		validDocsCount := 0
-		for _, doc := range searchResults {
+		for i, doc := range searchResults {
+			s.logger.Info("Search result",
+				zap.Int("rank", i+1),
+				zap.Float32("score", doc.Score),
+				zap.Int("content_len", len(doc.Content)),
+				zap.String("content_preview", truncate(doc.Content, 80)),
+			)
 			if doc.Score > maxScore {
 				maxScore = doc.Score
 			}
 			if doc.Score < minScore {
 				minScore = doc.Score
 			}
-			if doc.Score >= 0.6 {
+			if doc.Score >= s.scoreThreshold {
 				validDocsCount++
 			}
 		}
@@ -149,7 +182,34 @@ func (s *RAGService) StreamChat(ctx context.Context, userQuery string) (<-chan s
 		)
 		searchSpan.End()
 
-		// ========== 4. Prompt Assembly 阶段 ==========
+		// ========== 4. Rerank 阶段 ==========
+		if s.reranker != nil && len(searchResults) > 0 {
+			_, rerankSpan := observability.StartSpan(ctx, "Rerank")
+			rerankSpan.SetAttributes(
+				attribute.Int("rerank.input_docs", len(searchResults)),
+				attribute.Int("rerank.top_n", s.rerankTopN),
+			)
+
+			rerankStart := time.Now()
+			reranked, rerankErr := s.reranker.Rerank(ctx, userQuery, searchResults, s.rerankTopN)
+			rerankDuration := time.Since(rerankStart)
+
+			rerankSpan.SetAttributes(
+				attribute.Float64("rerank.duration_ms", float64(rerankDuration.Milliseconds())),
+			)
+
+			if rerankErr != nil {
+				observability.SetSpanError(rerankSpan, rerankErr)
+				s.logger.Warn("Rerank failed, using original results", zap.Error(rerankErr))
+			} else {
+				searchResults = reranked
+				rerankSpan.SetAttributes(attribute.Int("rerank.output_docs", len(reranked)))
+				observability.SetSpanSuccess(rerankSpan)
+			}
+			rerankSpan.End()
+		}
+
+		// ========== 5. Prompt Assembly 阶段 ==========
 		_, promptSpan := observability.StartSpan(ctx, "PromptAssembly")
 		promptStart := time.Now()
 
@@ -221,7 +281,7 @@ func (s *RAGService) StreamChat(ctx context.Context, userQuery string) (<-chan s
 
 					// 更新根 Span 统计
 					ragSpan.SetAttributes(
-						attribute.Float64("rag.total_duration_ms", float64(time.Since(llmStart).Milliseconds())+float64(embedDuration.Milliseconds())+float64(searchDuration.Milliseconds())),
+						attribute.Float64("rag.total_duration_ms", float64(time.Since(llmStart).Milliseconds())+float64(searchDuration.Milliseconds())),
 						attribute.Int("rag.output_tokens", tokenCount),
 						attribute.Bool("rag.success", true),
 					)
@@ -285,13 +345,24 @@ func (s *RAGService) buildPrompt(_ string, docs []domain.SearchResult) string {
 	sb.WriteString("你是一个智能助手。请基于以下提供的上下文回答用户的问题。如果上下文没有相关信息，请诚实回答不知道后再给出你所认为的答案。\n\n")
 	sb.WriteString("=== 上下文开始 ===\n")
 
-	for i, doc := range docs {
-		if doc.Score < 0.6 {
+	idx := 0
+	for _, doc := range docs {
+		if doc.Score < s.scoreThreshold {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("[%d] %s\n", i+1, doc.Content))
+		idx++
+		sb.WriteString(fmt.Sprintf("[%d] %s\n", idx, doc.Content))
 	}
 	sb.WriteString("=== 上下文结束 ===\n")
 
 	return sb.String()
+}
+
+// truncate 截断字符串用于日志输出
+func truncate(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
 }

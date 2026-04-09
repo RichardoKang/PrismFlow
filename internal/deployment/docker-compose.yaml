@@ -5,7 +5,7 @@ services:
     image: redis/redis-stack:latest # 包含 RediSearch 和向量功能
     ports:
       - "6379:6379"
-      - "8001:8001"  # RedisInsight Web UI
+      - "8001:8001"
     environment:
       - REDIS_ARGS=--requirepass mypassword
     command: redis-stack-server --requirepass mypassword
@@ -78,6 +78,13 @@ services:
       start_period: 90s
       timeout: 20s
       retries: 3
+
+  # 4. Reranker 精排服务（ARM64 不支持 TEI，需手动部署 Xinference 或使用 mock）
+  # reranker:
+  #   image: ghcr.io/huggingface/text-embeddings-inference:latest
+  #   command: --model-id BAAI/bge-reranker-v2-m3 --port 8082
+  #   ports:
+  #     - "8082:8082"
 
 volumes:
   etcd_data:

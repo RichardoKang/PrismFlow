@@ -119,6 +119,11 @@ func (r *RedisSemanticCache) Close() error {
 	return r.client.Close()
 }
 
+// Client 返回底层 Redis 客户端，供其他模块复用连接
+func (r *RedisSemanticCache) Client() *redis.Client {
+	return r.client
+}
+
 // float32ToBytes 将向量转换为 Redis 接受的 bytes
 func float32ToBytes(floats []float32) []byte {
 	bytes := make([]byte, len(floats)*4)

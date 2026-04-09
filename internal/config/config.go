@@ -15,6 +15,23 @@ type Config struct {
 	VectorDB  VectorDBConfig  `yaml:"vector_db"`
 	Redis     RedisConfig     `yaml:"redis"`
 	Trace     TraceConfig     `yaml:"trace"`
+	RAG       RAGConfig       `yaml:"rag"`
+	Reranker  RerankerConfig  `yaml:"reranker"`
+}
+
+// RAGConfig RAG 流程相关配置
+type RAGConfig struct {
+	CacheThreshold float32 `yaml:"cache_threshold"` // 语义缓存相似度阈值
+	ScoreThreshold float32 `yaml:"score_threshold"` // 检索结果最低分数阈值
+	TopK           int     `yaml:"top_k"`           // 向量检索返回数量
+}
+
+// RerankerConfig 精排服务配置
+type RerankerConfig struct {
+	Provider string `yaml:"provider"` // bge / mock
+	BaseURL  string `yaml:"base_url"`
+	Model    string `yaml:"model"`
+	TopN     int    `yaml:"top_n"`
 }
 
 type ServerConfig struct {

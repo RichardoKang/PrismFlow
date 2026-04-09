@@ -106,7 +106,14 @@ func (h *ChatHandler) HandleChat(c *gin.Context) {
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 
 	// 5. 调用编排服务（传递带 trace 的 context）
-	tokenChan, errChan := h.ragService.StreamChat(ctx, req.Query)
+	// 从 gin context 取出缓存中间件已计算的 query vector，避免重复 embedding
+	var queryVector []float32
+	if vec, exists := c.Get("query_vector"); exists {
+		if v, ok := vec.([]float32); ok {
+			queryVector = v
+		}
+	}
+	tokenChan, errChan := h.ragService.StreamChat(ctx, req.Query, queryVector)
 
 	// 6. 创建 SSE 发送的 Span
 	_, sseSpan := observability.StartSpan(ctx, "SSE.SendResponse")

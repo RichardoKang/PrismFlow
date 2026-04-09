@@ -19,6 +19,9 @@ type VectorStore interface {
 	// Search 向量检索
 	Search(ctx context.Context, vector []float32, topK int) ([]domain.SearchResult, error)
 
-	// Store 存储向量 (用于知识库入库)
+	// Store 存储单条向量 (用于知识库入库)
 	Store(ctx context.Context, id string, vector []float32, content string, meta map[string]interface{}) error
+
+	// StoreBatch 批量存储向量，写入后统一 Flush
+	StoreBatch(ctx context.Context, vectors [][]float32, contents []string, metas []map[string]interface{}) error
 }

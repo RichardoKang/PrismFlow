@@ -44,3 +44,7 @@ func (m *MockVectorAdapter) Search(ctx context.Context, vector []float32, topK i
 func (m *MockVectorAdapter) Store(ctx context.Context, id string, vector []float32, content string, meta map[string]interface{}) error {
 	return nil
 }
+
+func (m *MockVectorAdapter) StoreBatch(ctx context.Context, vectors [][]float32, contents []string, metas []map[string]interface{}) error {
+	return nil
+}

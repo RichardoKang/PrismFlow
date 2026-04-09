@@ -7,22 +7,33 @@ import (
 	"PrismFlow/internal/core/ports"
 )
 
-type MockEmbeddingAdapter struct{}
+type MockEmbeddingAdapter struct {
+	dim int
+}
 
 // 确保实现了接口
 var _ ports.EmbeddingProvider = (*MockEmbeddingAdapter)(nil)
 
 func NewMockEmbeddingAdapter() *MockEmbeddingAdapter {
-	return &MockEmbeddingAdapter{}
+	return &MockEmbeddingAdapter{dim: 768}
 }
 
 func (m *MockEmbeddingAdapter) Embed(ctx context.Context, text string) ([]float32, error) {
-	// 返回一个随机的 1536 维向量 (模拟 OpenAI embedding 维度)
-	// 这样可以让流程跑通，虽然向量本身没有语义，但配合 Mock VectorDB 足够测试 RAG 流程
-	dims := 1536
-	vec := make([]float32, dims)
-	for i := 0; i < dims; i++ {
+	vec := make([]float32, m.dim)
+	for i := range vec {
 		vec[i] = rand.Float32()
 	}
 	return vec, nil
+}
+
+func (m *MockEmbeddingAdapter) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	result := make([][]float32, len(texts))
+	for i := range texts {
+		vec := make([]float32, m.dim)
+		for j := range vec {
+			vec[j] = rand.Float32()
+		}
+		result[i] = vec
+	}
+	return result, nil
 }

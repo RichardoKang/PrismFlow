@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"PrismFlow/internal/core/domain"
 	"PrismFlow/internal/core/ports"
@@ -30,7 +31,8 @@ type MilvusConfig struct {
 }
 
 func NewMilvusAdapter(cfg MilvusConfig) (*MilvusAdapter, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
 
 	c, err := client.NewClient(ctx, client.Config{
 		Address: cfg.Address,
@@ -75,8 +77,8 @@ func (m *MilvusAdapter) ensureCollection(ctx context.Context) error {
 			return fmt.Errorf("failed to create collection: %w", err)
 		}
 
-		// 创建向量索引，nlist_size 可以根据数据量调整，代表聚类中心数量
-		idx, _ := entity.NewIndexIvfFlat(entity.COSINE, 128)
+		// 创建 HNSW 向量索引，对中小数据集效果更好
+		idx, _ := entity.NewIndexHNSW(entity.COSINE, 16, 256)
 		if err := m.client.CreateIndex(ctx, m.collectionName, "embedding", idx, false); err != nil {
 			return fmt.Errorf("failed to create index: %w", err)
 		}
@@ -84,14 +86,15 @@ func (m *MilvusAdapter) ensureCollection(ctx context.Context) error {
 		log.Printf("Created Milvus collection: %s", m.collectionName)
 	}
 
-	// 加载 collection 到内存
+	// 加载 collection 到内存（同步等待加载完成）
+	log.Printf("Loading collection '%s' into memory...", m.collectionName)
 	return m.client.LoadCollection(ctx, m.collectionName, false)
 }
 
 // Search 向量检索，实现 ports.VectorStore 接口
 func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) ([]domain.SearchResult, error) {
-	// 设置搜索参数，nprobes 代表搜索时扫描的簇数量，值越大精度越高但速度越慢
-	sp, _ := entity.NewIndexIvfFlatSearchParam(16)
+	// 设置搜索参数 (HNSW ef 值，越大精度越高但速度越慢)
+	sp, _ := entity.NewIndexHNSWSearchParam(64)
 
 	// 执行搜索，返回 content 和 metadata 字段
 	results, err := m.client.Search(
@@ -100,7 +103,7 @@ func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) 
 		nil,
 		"",
 		[]string{"content", "metadata"},
-		[]entity.Vector{entity.FloatVector(vector)}, // 查询向量，注意包装成 entity.Vector 切片
+		[]entity.Vector{entity.FloatVector(vector)},
 		"embedding",
 		entity.COSINE,
 		topK, // topK，返回最相似的 K 个结果
@@ -126,7 +129,7 @@ func (m *MilvusAdapter) Search(ctx context.Context, vector []float32, topK int) 
 			searchResults = append(searchResults, domain.SearchResult{
 				ID:      fmt.Sprintf("%d", i),
 				Content: content,
-				Score:   result.Scores[i],
+				Score:   result.Scores[i], // Milvus COSINE 原始分数
 				Meta:    meta,
 			})
 		}
@@ -151,6 +154,33 @@ func (m *MilvusAdapter) Store(ctx context.Context, id string, vector []float32, 
 	_, err = m.client.Insert(ctx, m.collectionName, "", contentCol, metadataCol, embeddingCol)
 	if err != nil {
 		return fmt.Errorf("insert failed: %w", err)
+	}
+
+	return nil
+}
+
+// StoreBatch 批量存储向量，写入后统一 Flush
+func (m *MilvusAdapter) StoreBatch(ctx context.Context, vectors [][]float32, contents []string, metas []map[string]interface{}) error {
+	if len(vectors) == 0 {
+		return nil
+	}
+
+	metaStrs := make([]string, len(metas))
+	for i, meta := range metas {
+		b, err := json.Marshal(meta)
+		if err != nil {
+			b = []byte("{}")
+		}
+		metaStrs[i] = string(b)
+	}
+
+	contentCol := entity.NewColumnVarChar("content", contents)
+	metadataCol := entity.NewColumnVarChar("metadata", metaStrs)
+	embeddingCol := entity.NewColumnFloatVector("embedding", m.dimension, vectors)
+
+	_, err := m.client.Insert(ctx, m.collectionName, "", contentCol, metadataCol, embeddingCol)
+	if err != nil {
+		return fmt.Errorf("batch insert failed: %w", err)
 	}
 
 	return m.client.Flush(ctx, m.collectionName, false)

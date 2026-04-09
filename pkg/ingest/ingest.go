@@ -9,7 +9,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"time"
 
 	"PrismFlow/internal/adapter/embedding"
 	"PrismFlow/internal/adapter/vectordb"
@@ -30,6 +29,7 @@ func main() {
 	mdPath := flag.String("file", "", "要导入的 Markdown 文件路径")
 	chunkSize := flag.Int("chunk-size", 500, "每个文档块的最大字符数")
 	overlap := flag.Int("overlap", 50, "块之间的重叠字符数")
+	batchSize := flag.Int("batch-size", 20, "批量处理大小")
 	flag.Parse()
 
 	if *mdPath == "" {
@@ -43,6 +43,7 @@ func main() {
 	}
 
 	// 初始化 Milvus
+	log.Printf("正在连接 Milvus: %s", cfg.VectorDBAddr())
 	milvusCfg := vectordb.MilvusConfig{
 		Address:        cfg.VectorDBAddr(),
 		CollectionName: cfg.VectorDB.CollectionName,
@@ -53,17 +54,31 @@ func main() {
 		log.Fatalf("连接 Milvus 失败: %v", err)
 	}
 	defer milvusAdapter.Close()
+	log.Println("Milvus 连接成功")
 
 	// 初始化 Embedding Adapter
 	var embedAdapter ports.EmbeddingProvider
-	if cfg.Embedding.Provider == "ollama" {
+	switch cfg.Embedding.Provider {
+	case "ollama":
 		embedAdapter = embedding.NewOllamaEmbeddingAdapter(embedding.OllamaConfig{
 			BaseURL: cfg.Embedding.BaseURL,
 			Model:   cfg.Embedding.Model,
 		})
 		log.Printf("使用 Ollama embedding: %s", cfg.Embedding.Model)
-	} else {
-		log.Fatal("请配置 Ollama embedding provider")
+	case "llamacpp":
+		embedAdapter = embedding.NewLlamaCppEmbeddingAdapter(cfg.Embedding.BaseURL)
+		log.Printf("使用 llama.cpp embedding: %s", cfg.Embedding.BaseURL)
+	default:
+		embedAdapter = embedding.NewMockEmbeddingAdapter()
+		log.Printf("使用 Mock embedding（维度: %d）", cfg.VectorDB.Dimension)
+	}
+
+	// 需要 EmbedBatch 支持
+	batchEmbedder, hasBatch := embedAdapter.(interface {
+		EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
+	})
+	if !hasBatch {
+		log.Fatal("Embedding adapter 不支持 EmbedBatch")
 	}
 
 	// 读取并分割 Markdown 文件
@@ -74,42 +89,78 @@ func main() {
 	}
 	log.Printf("共分割为 %d 个文档块", len(docs))
 
-	// 导入到 Milvus
+	// 批量导入到 Milvus
 	ctx := context.Background()
 	successCount := 0
 	failCount := 0
 
-	for i, doc := range docs {
-		// 生成 embedding
-		vector, err := embedAdapter.Embed(ctx, doc.Content)
+	for i := 0; i < len(docs); i += *batchSize {
+		end := i + *batchSize
+		if end > len(docs) {
+			end = len(docs)
+		}
+		batch := docs[i:end]
+
+		// 收集当前批次的文本
+		texts := make([]string, len(batch))
+		for j, doc := range batch {
+			texts[j] = doc.Content
+		}
+
+		// 批量生成 embedding
+		vectors, err := batchEmbedder.EmbedBatch(ctx, texts)
 		if err != nil {
-			log.Printf("[%d/%d] 生成 embedding 失败: %v", i+1, len(docs), err)
-			failCount++
+			log.Printf("[batch %d-%d] 批量 embedding 失败: %v", i+1, end, err)
+			failCount += len(batch)
 			continue
 		}
 
-		// 存入 Milvus
-		meta := map[string]interface{}{
-			"title":  doc.Title,
-			"source": doc.Source,
+		// 构建批量存储参数
+		contents := make([]string, len(batch))
+		metas := make([]map[string]interface{}, len(batch))
+		for j, doc := range batch {
+			contents[j] = doc.Content
+			metas[j] = map[string]interface{}{
+				"title":  doc.Title,
+				"source": doc.Source,
+			}
 		}
-		err = milvusAdapter.Store(ctx, fmt.Sprintf("doc_%d", i), vector, doc.Content, meta)
-		if err != nil {
-			log.Printf("[%d/%d] 存入 Milvus 失败: %v", i+1, len(docs), err)
-			failCount++
+
+		// 批量写入 Milvus（统一 Flush）
+		if err := milvusAdapter.StoreBatch(ctx, vectors, contents, metas); err != nil {
+			log.Printf("[batch %d-%d] 批量写入 Milvus 失败: %v", i+1, end, err)
+			failCount += len(batch)
 			continue
 		}
 
-		successCount++
-		if successCount%10 == 0 {
-			log.Printf("进度: %d/%d (成功: %d, 失败: %d)", i+1, len(docs), successCount, failCount)
-		}
-
-		// 避免请求过快
-		time.Sleep(100 * time.Millisecond)
+		successCount += len(batch)
+		log.Printf("进度: %d/%d (成功: %d, 失败: %d)", end, len(docs), successCount, failCount)
 	}
 
 	log.Printf("导入完成! 成功: %d, 失败: %d, 总计: %d", successCount, failCount, len(docs))
+}
+
+// Markdown 格式清理正则
+var (
+	titleRegex    = regexp.MustCompile(`^#+\s+(.+)$`)
+	codeBlockRe   = regexp.MustCompile("(?s)```.*?```")
+	linkRe        = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+	boldItalicRe  = regexp.MustCompile(`[*_]{1,3}([^*_]+)[*_]{1,3}`)
+	imageRe       = regexp.MustCompile(`!\[[^\]]*\]\([^)]+\)`)
+	htmlTagRe     = regexp.MustCompile(`<[^>]+>`)
+	inlineCodeRe  = regexp.MustCompile("`([^`]+)`")
+)
+
+// stripMarkdown 去除 Markdown 格式符号
+func stripMarkdown(text string) string {
+	result := text
+	result = codeBlockRe.ReplaceAllString(result, "")
+	result = imageRe.ReplaceAllString(result, "")
+	result = linkRe.ReplaceAllString(result, "$1")
+	result = boldItalicRe.ReplaceAllString(result, "$1")
+	result = htmlTagRe.ReplaceAllString(result, "")
+	result = inlineCodeRe.ReplaceAllString(result, "$1")
+	return result
 }
 
 // splitMarkdown 按章节和段落分割 Markdown 文件
@@ -124,11 +175,7 @@ func splitMarkdown(filePath string, chunkSize, overlap int) ([]Document, error) 
 	var currentTitle string
 	var currentContent strings.Builder
 
-	// 标题正则表达式
-	titleRegex := regexp.MustCompile(`^#+\s+(.+)$`)
-
 	scanner := bufio.NewScanner(file)
-	// 增大缓冲区以处理长行
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
@@ -141,7 +188,8 @@ func splitMarkdown(filePath string, chunkSize, overlap int) ([]Document, error) 
 		if matches := titleRegex.FindStringSubmatch(line); len(matches) > 1 {
 			// 保存之前的内容
 			if currentContent.Len() > 0 {
-				chunks := splitIntoChunks(currentContent.String(), chunkSize, overlap)
+				cleaned := stripMarkdown(currentContent.String())
+				chunks := splitIntoChunks(cleaned, chunkSize, overlap)
 				for _, chunk := range chunks {
 					if strings.TrimSpace(chunk) != "" {
 						docs = append(docs, Document{
@@ -152,7 +200,6 @@ func splitMarkdown(filePath string, chunkSize, overlap int) ([]Document, error) 
 					}
 				}
 			}
-			// 开始新章节
 			currentTitle = matches[1]
 			currentContent.Reset()
 		} else {
@@ -167,7 +214,8 @@ func splitMarkdown(filePath string, chunkSize, overlap int) ([]Document, error) 
 
 	// 处理最后一个章节
 	if currentContent.Len() > 0 {
-		chunks := splitIntoChunks(currentContent.String(), chunkSize, overlap)
+		cleaned := stripMarkdown(currentContent.String())
+		chunks := splitIntoChunks(cleaned, chunkSize, overlap)
 		for _, chunk := range chunks {
 			if strings.TrimSpace(chunk) != "" {
 				docs = append(docs, Document{
@@ -186,37 +234,50 @@ func splitMarkdown(filePath string, chunkSize, overlap int) ([]Document, error) 
 	return docs, nil
 }
 
-// splitIntoChunks 将文本分割成指定大小的块，带重叠
+// splitIntoChunks 优先按段落/句子边界分割，带重叠
 func splitIntoChunks(text string, chunkSize, overlap int) []string {
 	text = strings.TrimSpace(text)
 	if len(text) == 0 {
 		return nil
 	}
 
-	// 如果文本小于 chunkSize，直接返回
-	if len(text) <= chunkSize {
+	runes := []rune(text)
+	if len(runes) <= chunkSize {
 		return []string{text}
 	}
 
 	var chunks []string
-	runes := []rune(text) // 使用 rune 处理中文
-
 	start := 0
+
 	for start < len(runes) {
 		end := start + chunkSize
 		if end > len(runes) {
 			end = len(runes)
 		}
 
-		// 尝试在句子结尾处断开
+		// 优先在段落边界断开
 		if end < len(runes) {
-			// 向后查找句子结束符
+			bestBreak := -1
+			// 先找段落边界（双换行）
 			for i := end; i > start+chunkSize/2; i-- {
-				if runes[i] == '。' || runes[i] == '！' || runes[i] == '？' ||
-					runes[i] == '\n' || runes[i] == '.' || runes[i] == '!' || runes[i] == '?' {
-					end = i + 1
+				if i+1 < len(runes) && runes[i] == '\n' && runes[i-1] == '\n' {
+					bestBreak = i + 1
 					break
 				}
+			}
+			// 再找句子边界
+			if bestBreak == -1 {
+				for i := end; i > start+chunkSize/2; i-- {
+					if runes[i] == '。' || runes[i] == '！' || runes[i] == '？' ||
+						runes[i] == '.' || runes[i] == '!' || runes[i] == '?' ||
+						runes[i] == '\n' {
+						bestBreak = i + 1
+						break
+					}
+				}
+			}
+			if bestBreak > 0 {
+				end = bestBreak
 			}
 		}
 
@@ -225,9 +286,13 @@ func splitIntoChunks(text string, chunkSize, overlap int) []string {
 			chunks = append(chunks, chunk)
 		}
 
-		// 计算下一个起始位置（考虑重叠）
-		start = end - overlap
-		if start <= 0 || start >= len(runes) {
+		// 确保 start 始终前进，避免死循环
+		newStart := end - overlap
+		if newStart <= start {
+			newStart = end
+		}
+		start = newStart
+		if start >= len(runes) {
 			break
 		}
 	}

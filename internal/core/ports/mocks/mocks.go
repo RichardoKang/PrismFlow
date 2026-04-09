@@ -56,6 +56,10 @@ func (m *MockVectorStore) Store(ctx context.Context, id string, vector []float32
 	return nil
 }
 
+func (m *MockVectorStore) StoreBatch(ctx context.Context, vectors [][]float32, contents []string, metas []map[string]interface{}) error {
+	return nil
+}
+
 // MockEmbeddingProvider 模拟 Embedding 提供者
 type MockEmbeddingProvider struct {
 	EmbedFunc func(ctx context.Context, text string) ([]float32, error)
